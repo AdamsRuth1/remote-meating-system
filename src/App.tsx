@@ -29,11 +29,11 @@ import {
   Hand,
   Maximize2,
   Minimize2,
-  Volume2,
   Send,
   Lock,
   Copy,
-  Check
+  Check,
+  Trash2
 } from 'lucide-react';
 
 interface Meeting {
@@ -50,78 +50,42 @@ interface Meeting {
   category: string;
 }
 
-const INITIAL_MEETINGS: Meeting[] = [
-  {
-    id: 'm1',
-    title: 'Weekly Ops Briefing',
-    dateStr: 'Tue, Nov 4, 2025',
-    timeStr: '09:00 AM - 10:00 AM',
-    dayNum: '04',
-    dayName: 'TUE',
-    month: 'NOV',
-    host: 'HQ Operations',
-    status: 'upcoming',
-    code: 'ops-brief-nov4',
-    category: 'Operations',
-  },
-  {
-    id: 'm2',
-    title: 'Signals Corps Update',
-    dateStr: 'Wed, Nov 5, 2025',
-    timeStr: '02:00 PM - 03:00 PM',
-    dayNum: '05',
-    dayName: 'WED',
-    month: 'NOV',
-    host: 'Signals Corps',
-    status: 'upcoming',
-    code: 'sig-corp-update',
-    category: 'Comms',
-  },
-  {
-    id: 'm3',
-    title: 'DADP eLibrary Review',
-    dateStr: 'Thu, Nov 6, 2025',
-    timeStr: '11:00 AM - 12:00 PM',
-    dayNum: '06',
-    dayName: 'THU',
-    month: 'NOV',
-    host: 'DADP',
-    status: 'upcoming',
-    code: 'dadp-elib-rev',
-    category: 'Training',
-  },
-];
-
-interface Participant {
+interface ChatMessage {
   id: string;
-  name: string;
-  rank: string;
-  role: string;
-  avatarColor: string;
-  initials: string;
-  isMuted: boolean;
-  isVideoOff: boolean;
-  isHost?: boolean;
+  sender: string;
+  text: string;
+  time: string;
 }
-
-const MOCK_PARTICIPANTS: Participant[] = [
-  { id: 'p1', name: 'RO ADAMS', rank: '2LT', role: 'You (Comms Officer)', avatarColor: 'bg-emerald-600', initials: 'RA', isMuted: false, isVideoOff: false, isHost: true },
-  { id: 'p2', name: 'IBRAHIM M.', rank: 'GEN', role: 'Commanding Officer', avatarColor: 'bg-amber-600', initials: 'IM', isMuted: false, isVideoOff: false },
-  { id: 'p3', name: 'CHUKWU O.', rank: 'CAPT', role: 'Signals Intel', avatarColor: 'bg-blue-600', initials: 'CO', isMuted: true, isVideoOff: true },
-  { id: 'p4', name: 'DANJUMA K.', rank: 'MAJ', role: 'HQ Operations', avatarColor: 'bg-purple-600', initials: 'DK', isMuted: false, isVideoOff: false },
-];
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'home' | 'meetings' | 'schedule' | 'about' | 'help'>('home');
   const [scheduleFilter, setScheduleFilter] = useState<'upcoming' | 'past' | 'all'>('upcoming');
-  const [meetings, setMeetings] = useState<Meeting[]>(INITIAL_MEETINGS);
+  
+  // Clean state: loaded from localStorage or initially empty (no demo data)
+  const [meetings, setMeetings] = useState<Meeting[]>(() => {
+    try {
+      const saved = localStorage.getItem('rams_meetings');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  // Persist user-created meetings
+  useEffect(() => {
+    try {
+      localStorage.setItem('rams_meetings', JSON.stringify(meetings));
+    } catch {
+      // Ignore storage errors
+    }
+  }, [meetings]);
 
   // In-app Video Meeting Room State
   const [inActiveMeeting, setInActiveMeeting] = useState(false);
   const [currentMeetingRoom, setCurrentMeetingRoom] = useState<{ id: string; title: string; code: string }>({
-    id: 'rams-room',
-    title: 'RAMS Tactical Operational Briefing',
-    code: 'HQ-OPS-432',
+    id: '',
+    title: '',
+    code: '',
   });
 
   // Call Controls
@@ -134,18 +98,17 @@ export default function App() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
 
-  // In-meeting Chat
-  const [chatMessages, setChatMessages] = useState<Array<{ sender: string; text: string; time: string }>>([
-    { sender: 'GEN IBRAHIM M.', text: 'Good day officers. Commencing briefing on tactical grid.', time: '09:02' },
-    { sender: 'HQ Command', text: 'Encryption AES-256 link verified.', time: '09:03' }
-  ]);
+  // In-meeting Chat (Plain & clean, start empty)
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [messageInput, setMessageInput] = useState('');
 
   // Local WebCam Video Stream
   const localVideoRef = useRef<HTMLVideoElement>(null);
+  const screenShareVideoRef = useRef<HTMLVideoElement>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
 
-  // Modals
+  // Modals & form states
   const [showJoinModal, setShowJoinModal] = useState(false);
   const [showNewMeetingModal, setShowNewMeetingModal] = useState(false);
   const [joinCodeInput, setJoinCodeInput] = useState('');
@@ -153,26 +116,28 @@ export default function App() {
   
   // New Meeting Form
   const [newTitle, setNewTitle] = useState('');
-  const [newDate, setNewDate] = useState('2025-11-10');
+  const [newDate, setNewDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [newTime, setNewTime] = useState('10:00 AM - 11:00 AM');
-  const [newHost, setNewHost] = useState('HQ Command');
+  const [newHost, setNewHost] = useState('My Unit');
 
-  // FAQ
+  // FAQ accordion
   const [openFaq, setOpenFaq] = useState<number | null>(null);
   const [showNotifications, setShowNotifications] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
 
-  // Start web meeting inside app
+  // Launch in-app live meeting
   const launchInAppMeeting = (title: string, code?: string) => {
+    const roomCode = code || ('RAMS-' + Math.floor(1000 + Math.random() * 9000));
     setCurrentMeetingRoom({
       id: 'room-' + Date.now(),
-      title: title || 'Tactical Comms Room',
-      code: code || ('RAMS-' + Math.floor(100 + Math.random() * 900) + '-' + Math.floor(100 + Math.random() * 900)),
+      title: title || 'Tactical Meeting',
+      code: roomCode,
     });
+    setChatMessages([]);
     setInActiveMeeting(true);
   };
 
-  // Setup WebRTC media stream when inside meeting
+  // WebRTC User Media
   useEffect(() => {
     let stream: MediaStream | null = null;
     if (inActiveMeeting && cameraEnabled) {
@@ -185,8 +150,7 @@ export default function App() {
           }
         })
         .catch(() => {
-          // Fallback gracefully if camera is blocked/unavailable
-          console.log('Webcam/Mic permission not granted or device unavailable; running visual simulated stream.');
+          console.log('Camera/Mic permission not available or denied.');
         });
     }
 
@@ -197,7 +161,32 @@ export default function App() {
     };
   }, [inActiveMeeting, cameraEnabled]);
 
-  // Toggle Camera
+  // Screen Share Toggle
+  const toggleScreenShare = async () => {
+    if (!isScreenSharing) {
+      try {
+        const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        screenStreamRef.current = stream;
+        if (screenShareVideoRef.current) {
+          screenShareVideoRef.current.srcObject = stream;
+        }
+        setIsScreenSharing(true);
+        stream.getVideoTracks()[0].onended = () => {
+          setIsScreenSharing(false);
+          screenStreamRef.current = null;
+        };
+      } catch {
+        setIsScreenSharing(false);
+      }
+    } else {
+      if (screenStreamRef.current) {
+        screenStreamRef.current.getTracks().forEach(t => t.stop());
+        screenStreamRef.current = null;
+      }
+      setIsScreenSharing(false);
+    }
+  };
+
   const toggleCamera = () => {
     if (cameraEnabled && localStreamRef.current) {
       localStreamRef.current.getVideoTracks().forEach((track) => track.stop());
@@ -205,7 +194,6 @@ export default function App() {
     setCameraEnabled(!cameraEnabled);
   };
 
-  // Toggle Microphone
   const toggleMic = () => {
     if (localStreamRef.current) {
       localStreamRef.current.getAudioTracks().forEach((track) => {
@@ -215,23 +203,27 @@ export default function App() {
     setMicEnabled(!micEnabled);
   };
 
-  // Leave Meeting
   const leaveMeeting = () => {
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((t) => t.stop());
       localStreamRef.current = null;
     }
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((t) => t.stop());
+      screenStreamRef.current = null;
+    }
+    setIsScreenSharing(false);
     setInActiveMeeting(false);
   };
 
-  // Send Chat message
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
     if (!messageInput.trim()) return;
     setChatMessages([
       ...chatMessages,
       {
-        sender: '2LT RO ADAMS (You)',
+        id: 'msg-' + Date.now(),
+        sender: 'You',
         text: messageInput.trim(),
         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       },
@@ -243,16 +235,24 @@ export default function App() {
     e.preventDefault();
     if (!newTitle.trim()) return;
 
-    const code = 'rams-' + Math.random().toString(36).substring(2, 7);
+    const parsedDate = new Date(newDate);
+    const dayNames = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+    const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+    
+    const dayName = !isNaN(parsedDate.getTime()) ? dayNames[parsedDate.getDay()] : 'MON';
+    const month = !isNaN(parsedDate.getTime()) ? monthNames[parsedDate.getMonth()] : 'NOV';
+    const dayNum = !isNaN(parsedDate.getTime()) ? String(parsedDate.getDate()).padStart(2, '0') : '01';
+
+    const code = 'RAMS-' + Math.floor(1000 + Math.random() * 9000);
     const newMeeting: Meeting = {
       id: 'm-' + Date.now(),
       title: newTitle.trim(),
       dateStr: newDate,
-      timeStr: newTime,
-      dayNum: '10',
-      dayName: 'MON',
-      month: 'NOV',
-      host: newHost,
+      timeStr: newTime.trim() || '10:00 AM - 11:00 AM',
+      dayNum,
+      dayName,
+      month,
+      host: newHost.trim() || 'Host',
       status: 'upcoming',
       code: code,
       category: 'General',
@@ -261,7 +261,11 @@ export default function App() {
     setMeetings([newMeeting, ...meetings]);
     setShowNewMeetingModal(false);
     setNewTitle('');
-    launchInAppMeeting(newMeeting.title, code);
+    setActiveTab('schedule');
+  };
+
+  const handleDeleteMeeting = (id: string) => {
+    setMeetings(meetings.filter(m => m.id !== id));
   };
 
   const filteredMeetings = meetings.filter((m) => {
@@ -273,7 +277,7 @@ export default function App() {
   return (
     <div className="relative min-h-screen w-full bg-[#050906] text-slate-100 flex flex-col justify-between selection:bg-emerald-600 selection:text-white font-sans antialiased overflow-x-hidden">
       
-      {/* Topo background */}
+      {/* Subtle Topo Ambience */}
       <div className="fixed inset-0 pointer-events-none z-0">
         <div 
           className="absolute inset-0 opacity-[0.10]"
@@ -287,10 +291,11 @@ export default function App() {
       </div>
 
       {/* ========================================================================= */}
-      {/* FULL IN-APP LIVE MEETING INTERFACE (HOSTED DIRECTLY ON THIS WEBSITE)      */}
+      {/* CLEAN IN-APP LIVE MEETING ROOM (ONLY YOU + LIVE ROOM PARTICIPANTS)       */}
       {/* ========================================================================= */}
       {inActiveMeeting ? (
         <div className="relative z-20 flex flex-col h-screen w-screen bg-[#040805] text-white">
+          
           {/* Meeting Room Top Bar */}
           <header className="h-14 border-b border-[#122818] bg-[#071109] px-4 sm:px-6 flex items-center justify-between">
             <div className="flex items-center space-x-3">
@@ -303,10 +308,10 @@ export default function App() {
                     <span>{currentMeetingRoom.title}</span>
                     <span className="text-[10px] bg-emerald-950 text-emerald-400 border border-emerald-600/40 px-2 py-0.5 rounded-full flex items-center space-x-1">
                       <Lock className="w-2.5 h-2.5" />
-                      <span>E2E Encrypted</span>
+                      <span>Encrypted</span>
                     </span>
                   </h1>
-                  <span className="text-[10px] text-zinc-400 font-mono">ROOM CODE: {currentMeetingRoom.code}</span>
+                  <span className="text-[10px] text-zinc-400 font-mono">CODE: {currentMeetingRoom.code}</span>
                 </div>
               </div>
             </div>
@@ -325,20 +330,59 @@ export default function App() {
               </button>
 
               <div className="flex items-center space-x-1 bg-[#09170e] border border-emerald-900 px-2.5 py-1 rounded-full text-xs text-emerald-400 font-mono">
-                <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                <span>REC 00:14:28</span>
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                <span>ONLINE</span>
               </div>
             </div>
           </header>
 
-          {/* Meeting Stage Area */}
+          {/* Meeting Stage Area (Clean: Local Stream + Screen Share if active) */}
           <div className="flex-1 flex overflow-hidden">
-            {/* Video Streams Grid */}
             <div className="flex-1 p-3 sm:p-5 flex flex-col justify-center items-center overflow-y-auto">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 w-full h-full max-h-[820px] max-w-6xl">
-                
-                {/* 1. YOU (Local User Camera Video / Screen) */}
-                <div className="relative rounded-2xl bg-[#09150d] border border-emerald-800/40 overflow-hidden flex flex-col items-center justify-center shadow-xl group">
+              
+              {isScreenSharing ? (
+                /* Screen sharing active: 2 tiles side-by-side or stacked */
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 w-full h-full max-h-[820px] max-w-6xl">
+                  {/* Screen Share Tile */}
+                  <div className="lg:col-span-2 relative rounded-2xl bg-[#09150d] border border-blue-500/50 overflow-hidden flex items-center justify-center shadow-xl">
+                    <video
+                      ref={screenShareVideoRef}
+                      autoPlay
+                      playsInline
+                      className="w-full h-full object-contain"
+                    />
+                    <div className="absolute top-3 left-3 bg-blue-900/80 text-white text-xs px-3 py-1 rounded-lg">
+                      Your Shared Screen
+                    </div>
+                  </div>
+
+                  {/* Your Camera Feed Tile */}
+                  <div className="relative rounded-2xl bg-[#09150d] border border-emerald-800/40 overflow-hidden flex flex-col items-center justify-center shadow-xl">
+                    {cameraEnabled ? (
+                      <video
+                        ref={localVideoRef}
+                        autoPlay
+                        playsInline
+                        muted
+                        className="w-full h-full object-cover transform -scale-x-100"
+                      />
+                    ) : (
+                      <div className="flex flex-col items-center justify-center">
+                        <div className="w-20 h-20 rounded-full bg-emerald-800 border-2 border-emerald-400 flex items-center justify-center text-xl font-bold text-white">
+                          YOU
+                        </div>
+                        <span className="mt-2 text-xs text-zinc-400 font-mono">Camera Off</span>
+                      </div>
+                    )}
+                    <div className="absolute bottom-3 left-3 flex items-center space-x-2 bg-black/60 px-3 py-1 rounded-lg text-xs font-semibold">
+                      <span>You (Host)</span>
+                      {!micEnabled && <MicOff className="w-3.5 h-3.5 text-red-400" />}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                /* Solo / Primary Meeting Stage: Clean, focused view */
+                <div className="relative w-full h-full max-h-[720px] max-w-4xl rounded-2xl bg-[#08120b] border border-emerald-800/40 overflow-hidden flex flex-col items-center justify-center shadow-2xl">
                   {cameraEnabled ? (
                     <video
                       ref={localVideoRef}
@@ -348,90 +392,38 @@ export default function App() {
                       className="w-full h-full object-cover transform -scale-x-100"
                     />
                   ) : (
-                    <div className="flex flex-col items-center justify-center">
-                      <div className="w-20 h-20 rounded-full bg-emerald-700 border-2 border-emerald-400 flex items-center justify-center text-2xl font-black text-white shadow-lg">
-                        RA
+                    <div className="flex flex-col items-center justify-center space-y-3">
+                      <div className="w-24 h-24 rounded-full bg-[#0a1e11] border-2 border-emerald-400 flex items-center justify-center text-2xl font-black text-emerald-400 shadow-xl">
+                        YOU
                       </div>
-                      <span className="mt-2 text-xs text-zinc-400 font-mono">Camera Off</span>
+                      <span className="text-sm font-bold text-zinc-300">You are in the meeting room</span>
+                      <span className="text-xs text-zinc-500 font-mono">Turn on your camera or invite members via code</span>
                     </div>
                   )}
 
-                  {/* Tile Overlay Label */}
-                  <div className="absolute bottom-3 left-3 flex items-center space-x-2 bg-black/60 backdrop-blur-md px-3 py-1 rounded-lg text-xs font-semibold">
-                    <span>2LT RO ADAMS (You)</span>
+                  {/* Clean Bottom Overlay */}
+                  <div className="absolute bottom-4 left-4 flex items-center space-x-2 bg-black/70 backdrop-blur-md px-3.5 py-1.5 rounded-xl text-xs font-semibold">
+                    <span>You (Host)</span>
                     {!micEnabled && <MicOff className="w-3.5 h-3.5 text-red-400" />}
                   </div>
 
                   {handRaised && (
-                    <div className="absolute top-3 left-3 bg-yellow-500/90 text-black px-2.5 py-1 rounded-lg text-xs font-bold flex items-center space-x-1">
+                    <div className="absolute top-4 left-4 bg-yellow-500 text-black px-3 py-1 rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-lg">
                       <Hand className="w-3.5 h-3.5" />
                       <span>Hand Raised</span>
                     </div>
                   )}
-                </div>
 
-                {/* 2. GEN IBRAHIM M. (Active Speaker Tile) */}
-                <div className="relative rounded-2xl bg-[#08120b] border-2 border-emerald-500/70 overflow-hidden flex flex-col items-center justify-center shadow-xl">
-                  {/* Tactical Speaker View Simulation */}
-                  <div className="absolute inset-0 bg-radial from-emerald-950/40 via-transparent to-black" />
-                  
-                  <div className="flex flex-col items-center justify-center z-10">
-                    <div className="relative">
-                      <div className="w-20 h-20 rounded-full bg-amber-700 border-2 border-amber-400 flex items-center justify-center text-2xl font-black text-white shadow-xl">
-                        IM
-                      </div>
-                      <span className="absolute bottom-0 right-0 w-5 h-5 bg-emerald-500 rounded-full border-2 border-[#08120b] flex items-center justify-center text-[10px] text-black font-black">★</span>
-                    </div>
-                    <span className="mt-3 text-sm font-bold text-white tracking-wide">GEN IBRAHIM M.</span>
-                    <span className="text-[11px] text-emerald-400 font-mono">Commanding Officer</span>
-                    <div className="mt-2 flex items-center space-x-1">
-                      <span className="w-1 h-3 bg-emerald-400 rounded-full animate-pulse" />
-                      <span className="w-1 h-5 bg-emerald-400 rounded-full animate-pulse" />
-                      <span className="w-1 h-2 bg-emerald-400 rounded-full animate-pulse" />
-                    </div>
-                  </div>
-
-                  <div className="absolute bottom-3 left-3 flex items-center space-x-2 bg-black/60 backdrop-blur-md px-3 py-1 rounded-lg text-xs font-semibold">
-                    <span>GEN IBRAHIM M.</span>
-                    <Volume2 className="w-3.5 h-3.5 text-emerald-400" />
+                  {/* Room code banner inside video stage for easy sharing */}
+                  <div className="absolute top-4 right-4 bg-black/60 backdrop-blur px-3 py-1.5 rounded-xl border border-emerald-900/60 text-xs text-zinc-300 flex items-center space-x-2">
+                    <span className="text-emerald-400 font-mono font-bold">Code: {currentMeetingRoom.code}</span>
                   </div>
                 </div>
+              )}
 
-                {/* 3. CAPT CHUKWU O. */}
-                <div className="relative rounded-2xl bg-[#08120b] border border-emerald-900/40 overflow-hidden flex flex-col items-center justify-center shadow-xl">
-                  <div className="flex flex-col items-center justify-center">
-                    <div className="w-18 h-18 rounded-full bg-blue-700 border-2 border-blue-400 flex items-center justify-center text-xl font-black text-white">
-                      CO
-                    </div>
-                    <span className="mt-2 text-xs font-bold text-zinc-300">CAPT CHUKWU O.</span>
-                    <span className="text-[10px] text-zinc-500 font-mono">Signals Intelligence</span>
-                  </div>
-
-                  <div className="absolute bottom-3 left-3 flex items-center space-x-2 bg-black/60 backdrop-blur-md px-3 py-1 rounded-lg text-xs font-semibold">
-                    <span>CAPT CHUKWU O.</span>
-                    <MicOff className="w-3.5 h-3.5 text-red-400" />
-                  </div>
-                </div>
-
-                {/* 4. MAJ DANJUMA K. */}
-                <div className="relative rounded-2xl bg-[#08120b] border border-emerald-900/40 overflow-hidden flex flex-col items-center justify-center shadow-xl">
-                  <div className="flex flex-col items-center justify-center">
-                    <div className="w-18 h-18 rounded-full bg-purple-700 border-2 border-purple-400 flex items-center justify-center text-xl font-black text-white">
-                      DK
-                    </div>
-                    <span className="mt-2 text-xs font-bold text-zinc-300">MAJ DANJUMA K.</span>
-                    <span className="text-[10px] text-zinc-500 font-mono">HQ Operations</span>
-                  </div>
-
-                  <div className="absolute bottom-3 left-3 flex items-center space-x-2 bg-black/60 backdrop-blur-md px-3 py-1 rounded-lg text-xs font-semibold">
-                    <span>MAJ DANJUMA K.</span>
-                  </div>
-                </div>
-
-              </div>
             </div>
 
-            {/* In-Meeting Side Panels (Chat or Participants) */}
+            {/* In-Meeting Chat Drawer */}
             {showChat && (
               <aside className="w-80 border-l border-[#122818] bg-[#071109] flex flex-col justify-between p-4 shrink-0 animate-fadeIn">
                 <div className="flex items-center justify-between pb-3 border-b border-emerald-900/40">
@@ -439,29 +431,33 @@ export default function App() {
                     <MessageSquare className="w-4 h-4 text-emerald-400" />
                     <span className="font-bold text-xs uppercase tracking-wider text-white">In-Call Messages</span>
                   </div>
-                  <button onClick={() => setShowChat(false)} className="text-zinc-400 hover:text-white">
+                  <button onClick={() => setShowChat(false)} className="text-zinc-400 hover:text-white cursor-pointer">
                     <X className="w-4 h-4" />
                   </button>
                 </div>
 
-                {/* Message Log */}
-                <div className="flex-1 overflow-y-auto space-y-3 py-3 pr-1 text-xs">
-                  {chatMessages.map((msg, idx) => (
-                    <div key={idx} className="p-2.5 rounded-xl bg-[#09170e] border border-emerald-900/40 space-y-1">
-                      <div className="flex items-center justify-between text-[10px]">
-                        <span className="font-bold text-emerald-400">{msg.sender}</span>
-                        <span className="text-zinc-500">{msg.time}</span>
-                      </div>
-                      <p className="text-zinc-200">{msg.text}</p>
+                <div className="flex-1 overflow-y-auto space-y-2.5 py-3 pr-1 text-xs">
+                  {chatMessages.length === 0 ? (
+                    <div className="text-center py-8 text-zinc-500 text-xs">
+                      No messages yet.<br />Send a message below.
                     </div>
-                  ))}
+                  ) : (
+                    chatMessages.map((msg) => (
+                      <div key={msg.id} className="p-2.5 rounded-xl bg-[#09170e] border border-emerald-900/40 space-y-1">
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className="font-bold text-emerald-400">{msg.sender}</span>
+                          <span className="text-zinc-500">{msg.time}</span>
+                        </div>
+                        <p className="text-zinc-200">{msg.text}</p>
+                      </div>
+                    ))
+                  )}
                 </div>
 
-                {/* Message Input */}
                 <form onSubmit={handleSendMessage} className="pt-2 flex items-center space-x-2">
                   <input
                     type="text"
-                    placeholder="Send a tactical message..."
+                    placeholder="Type a message..."
                     value={messageInput}
                     onChange={(e) => setMessageInput(e.target.value)}
                     className="flex-1 bg-[#050c07] border border-emerald-900 focus:border-emerald-500 rounded-xl px-3 py-2 text-xs text-white outline-none"
@@ -476,62 +472,58 @@ export default function App() {
               </aside>
             )}
 
+            {/* In-Meeting Personnel Drawer */}
             {showParticipantsList && (
               <aside className="w-80 border-l border-[#122818] bg-[#071109] flex flex-col justify-between p-4 shrink-0 animate-fadeIn">
                 <div className="flex items-center justify-between pb-3 border-b border-emerald-900/40">
                   <div className="flex items-center space-x-2">
                     <Users className="w-4 h-4 text-emerald-400" />
-                    <span className="font-bold text-xs uppercase tracking-wider text-white">
-                      Personnel ({MOCK_PARTICIPANTS.length})
-                    </span>
+                    <span className="font-bold text-xs uppercase tracking-wider text-white">Personnel (1)</span>
                   </div>
-                  <button onClick={() => setShowParticipantsList(false)} className="text-zinc-400 hover:text-white">
+                  <button onClick={() => setShowParticipantsList(false)} className="text-zinc-400 hover:text-white cursor-pointer">
                     <X className="w-4 h-4" />
                   </button>
                 </div>
 
                 <div className="flex-1 overflow-y-auto space-y-2 py-3">
-                  {MOCK_PARTICIPANTS.map((p) => (
-                    <div key={p.id} className="flex items-center justify-between p-2.5 rounded-xl bg-[#09170e] border border-emerald-900/40">
-                      <div className="flex items-center space-x-2.5">
-                        <div className={`w-7 h-7 rounded-full ${p.avatarColor} flex items-center justify-center text-[10px] font-bold text-white`}>
-                          {p.initials}
-                        </div>
-                        <div>
-                          <div className="text-xs font-bold text-white">{p.rank} {p.name}</div>
-                          <div className="text-[10px] text-zinc-400">{p.role}</div>
-                        </div>
+                  <div className="flex items-center justify-between p-2.5 rounded-xl bg-[#09170e] border border-emerald-900/40">
+                    <div className="flex items-center space-x-2.5">
+                      <div className="w-7 h-7 rounded-full bg-emerald-700 flex items-center justify-center text-[10px] font-bold text-white">
+                        YOU
                       </div>
-                      <div className="flex items-center space-x-1.5 text-zinc-400">
-                        {p.isMuted ? <MicOff className="w-3.5 h-3.5 text-red-400" /> : <Mic className="w-3.5 h-3.5 text-emerald-400" />}
+                      <div>
+                        <div className="text-xs font-bold text-white">You (Host)</div>
+                        <div className="text-[10px] text-zinc-400">Current Session</div>
                       </div>
                     </div>
-                  ))}
+                    <div className="flex items-center space-x-1.5 text-zinc-400">
+                      {micEnabled ? <Mic className="w-3.5 h-3.5 text-emerald-400" /> : <MicOff className="w-3.5 h-3.5 text-red-400" />}
+                    </div>
+                  </div>
                 </div>
 
                 <button
-                  onClick={() => alert('Invite link copied for tactical broadcast.')}
-                  className="w-full py-2 bg-[#0d2214] hover:bg-[#122e1b] border border-emerald-700/50 rounded-xl text-xs text-emerald-300 font-semibold flex items-center justify-center space-x-2"
+                  onClick={() => {
+                    navigator.clipboard.writeText(currentMeetingRoom.code);
+                    alert(`Meeting Room Code copied: ${currentMeetingRoom.code}`);
+                  }}
+                  className="w-full py-2 bg-[#0d2214] hover:bg-[#122e1b] border border-emerald-700/50 rounded-xl text-xs text-emerald-300 font-semibold flex items-center justify-center space-x-2 cursor-pointer"
                 >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Invite Unit Members</span>
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>Copy Code to Invite</span>
                 </button>
               </aside>
             )}
           </div>
 
-          {/* Meeting Room Floating Command Control Deck */}
+          {/* Meeting Control Footer */}
           <footer className="h-20 border-t border-[#122818] bg-[#071109] px-4 flex items-center justify-between">
-            {/* Left meeting info */}
             <div className="hidden md:flex items-center space-x-3 text-xs text-zinc-400">
-              <span className="font-mono text-emerald-400">FPS: 60 | BITRATE: 4.8 Mbps</span>
-              <span>&bull;</span>
-              <span>Nigerian Army Enclave</span>
+              <span className="font-mono text-emerald-400">STATUS: SECURE ENCLAVE</span>
             </div>
 
-            {/* Center Call Buttons */}
+            {/* Call Action Deck */}
             <div className="flex items-center space-x-2 sm:space-x-3 mx-auto md:mx-0">
-              {/* Mic Toggle */}
               <button
                 onClick={toggleMic}
                 className={`p-3.5 rounded-full border transition-all cursor-pointer ${
@@ -544,7 +536,6 @@ export default function App() {
                 {micEnabled ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
               </button>
 
-              {/* Camera Toggle */}
               <button
                 onClick={toggleCamera}
                 className={`p-3.5 rounded-full border transition-all cursor-pointer ${
@@ -557,9 +548,8 @@ export default function App() {
                 {cameraEnabled ? <Video className="w-5 h-5" /> : <VideoOff className="w-5 h-5" />}
               </button>
 
-              {/* Screen Share */}
               <button
-                onClick={() => setIsScreenSharing(!isScreenSharing)}
+                onClick={toggleScreenShare}
                 className={`p-3.5 rounded-full border transition-all cursor-pointer ${
                   isScreenSharing
                     ? 'bg-blue-900 border-blue-500 text-white'
@@ -570,7 +560,6 @@ export default function App() {
                 <Share2 className="w-5 h-5" />
               </button>
 
-              {/* Raise Hand */}
               <button
                 onClick={() => setHandRaised(!handRaised)}
                 className={`p-3.5 rounded-full border transition-all cursor-pointer ${
@@ -583,7 +572,6 @@ export default function App() {
                 <Hand className="w-5 h-5" />
               </button>
 
-              {/* Chat Toggle */}
               <button
                 onClick={() => {
                   setShowChat(!showChat);
@@ -594,12 +582,11 @@ export default function App() {
                     ? 'bg-emerald-500 text-black border-emerald-400'
                     : 'bg-[#102416] border-emerald-700/60 text-zinc-300 hover:bg-[#16331f]'
                 }`}
-                title="Toggle In-Meeting Chat"
+                title="Chat"
               >
                 <MessageSquare className="w-5 h-5" />
               </button>
 
-              {/* Participants List */}
               <button
                 onClick={() => {
                   setShowParticipantsList(!showParticipantsList);
@@ -610,27 +597,25 @@ export default function App() {
                     ? 'bg-emerald-500 text-black border-emerald-400'
                     : 'bg-[#102416] border-emerald-700/60 text-zinc-300 hover:bg-[#16331f]'
                 }`}
-                title="View Personnel"
+                title="Personnel"
               >
                 <Users className="w-5 h-5" />
               </button>
 
-              {/* Leave Call (Red) */}
               <button
                 onClick={leaveMeeting}
                 className="flex items-center space-x-2 bg-red-600 hover:bg-red-500 active:scale-95 text-white font-bold px-5 py-3 rounded-full transition-all shadow-lg shadow-red-900/40 cursor-pointer"
                 title="Leave Meeting"
               >
                 <PhoneOff className="w-5 h-5" />
-                <span className="hidden sm:inline text-xs">Leave Call</span>
+                <span className="hidden sm:inline text-xs">End Meeting</span>
               </button>
             </div>
 
-            {/* Right Fullscreen toggle */}
             <div className="hidden md:flex items-center space-x-2">
               <button
                 onClick={() => setIsFullscreen(!isFullscreen)}
-                className="p-3 rounded-xl bg-[#102416] border border-emerald-800/40 text-zinc-400 hover:text-white"
+                className="p-3 rounded-xl bg-[#102416] border border-emerald-800/40 text-zinc-400 hover:text-white cursor-pointer"
               >
                 {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
               </button>
@@ -640,14 +625,14 @@ export default function App() {
       ) : (
 
         /* ========================================================================= */
-        /* STANDARD RAMS PORTAL INTERFACE (HOME / MEETINGS / SCHEDULE / ABOUT / HELP)*/
+        /* STANDARD PORTAL SHELL (HOME, MEETINGS, SCHEDULE, ABOUT, HELP)             */
         /* ========================================================================= */
         <div className="relative z-10 flex flex-1 flex-col lg:flex-row min-h-screen">
           
           {/* SIDEBAR NAVIGATION */}
           <aside className="w-full lg:w-60 xl:w-64 border-r border-[#102315] bg-[#071109]/95 backdrop-blur-md flex flex-col justify-between p-5 shrink-0">
             <div>
-              {/* Nigerian Army Badge Header */}
+              {/* Crest Header */}
               <div className="flex flex-col items-center text-center pb-6 border-b border-[#102315]">
                 <div className="relative w-14 h-16 bg-[#0a160d] border border-yellow-500/40 rounded-sm flex flex-col items-center justify-center p-1.5 shadow-xl shadow-black/80 mb-2">
                   <div className="w-3.5 h-2 bg-red-600 rounded-t-xs" />
@@ -663,7 +648,7 @@ export default function App() {
                 <h2 className="text-xs font-black tracking-widest uppercase text-emerald-400">ARMY</h2>
               </div>
 
-              {/* Navigation Menu Links */}
+              {/* Navigation Links */}
               <nav className="mt-6 space-y-1.5">
                 {[
                   { id: 'home', label: 'Home', icon: Home },
@@ -692,10 +677,10 @@ export default function App() {
               </nav>
             </div>
 
-            {/* Bottom Log Out */}
+            {/* Logout */}
             <div className="pt-4 border-t border-[#102315]">
               <button
-                onClick={() => alert('Log out requested: Comms session concluded.')}
+                onClick={() => alert('Session logged out.')}
                 className="w-full flex items-center space-x-2.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold text-zinc-400 hover:text-red-400 hover:bg-red-950/20 transition-all cursor-pointer"
               >
                 <LogOut className="w-4 h-4 text-zinc-400 hover:text-red-400" />
@@ -704,10 +689,10 @@ export default function App() {
             </div>
           </aside>
 
-          {/* VIEWPORT AREA */}
+          {/* VIEWPORT */}
           <div className="flex-1 flex flex-col justify-between">
             
-            {/* Top Bar Header */}
+            {/* Header */}
             <header className="px-6 py-4 border-b border-[#0f2113] bg-[#071109]/90 backdrop-blur flex items-center justify-between">
               <div>
                 <div className="flex items-center space-x-2">
@@ -718,46 +703,36 @@ export default function App() {
                 <p className="text-[11px] text-zinc-400 font-normal sm:hidden">Remote Army Meeting System</p>
               </div>
 
-              {/* Notification Bell & Officer Profile Badge */}
+              {/* Status and Profile Pill */}
               <div className="flex items-center space-x-3">
-                {/* Notifications */}
                 <div className="relative">
                   <button
                     onClick={() => setShowNotifications(!showNotifications)}
                     className="p-2 rounded-full bg-[#0a170e] border border-emerald-900/50 text-zinc-400 hover:text-emerald-400 transition-colors relative cursor-pointer"
                   >
                     <Bell className="w-4 h-4" />
-                    <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
                   </button>
 
                   {showNotifications && (
                     <div className="absolute right-0 mt-2 w-72 bg-[#0a160d] border border-emerald-700/40 rounded-xl p-3 shadow-2xl z-50">
                       <div className="text-xs font-bold text-white mb-2 pb-1 border-b border-emerald-900/40">Comms Alerts</div>
-                      <div className="space-y-2 text-[11px]">
-                        <div className="p-2 bg-[#050b07] rounded border border-emerald-900/30">
-                          <span className="text-emerald-400 font-semibold block">In-Browser Engine Ready</span>
-                          <span className="text-zinc-400">All meetings run seamlessly inside this portal without leaving.</span>
-                        </div>
-                        <div className="p-2 bg-[#050b07] rounded border border-emerald-900/30">
-                          <span className="text-emerald-400 font-semibold block">Weekly Ops Briefing</span>
-                          <span className="text-zinc-400">Starts in 30 minutes</span>
-                        </div>
+                      <div className="p-3 text-center text-xs text-zinc-500">
+                        No active alerts.
                       </div>
                     </div>
                   )}
                 </div>
 
-                {/* Officer Profile Badge */}
                 <div className="relative">
                   <button
                     onClick={() => setShowUserMenu(!showUserMenu)}
                     className="flex items-center space-x-2.5 bg-[#0a170e] hover:bg-[#0f2516] border border-emerald-800/40 px-3 py-1.5 rounded-full transition-all cursor-pointer"
                   >
                     <div className="w-6 h-6 rounded-full bg-emerald-700/60 border border-emerald-400 overflow-hidden flex items-center justify-center text-[10px] font-bold text-white">
-                      2LT
+                      NA
                     </div>
                     <div className="text-left text-xs leading-none">
-                      <span className="font-bold text-white block">2LT RO ADAMS</span>
+                      <span className="font-bold text-white block">OPERATOR</span>
                       <span className="text-[10px] text-emerald-400 flex items-center space-x-1 mt-0.5">
                         <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
                         <span>Online</span>
@@ -768,11 +743,10 @@ export default function App() {
 
                   {showUserMenu && (
                     <div className="absolute right-0 mt-2 w-48 bg-[#0a160d] border border-emerald-700/40 rounded-xl p-2 shadow-2xl z-50 text-xs">
-                      <div className="px-3 py-1.5 text-zinc-400 text-[10px] uppercase font-bold border-b border-emerald-900/40">Unit: Signals HQ</div>
-                      <button onClick={() => { setActiveTab('about'); setShowUserMenu(false); }} className="w-full text-left px-3 py-2 text-zinc-300 hover:text-white hover:bg-emerald-900/20 rounded">About RAMS</button>
-                      <button onClick={() => { setActiveTab('help'); setShowUserMenu(false); }} className="w-full text-left px-3 py-2 text-zinc-300 hover:text-white hover:bg-emerald-900/20 rounded">Help & Support</button>
+                      <button onClick={() => { setActiveTab('about'); setShowUserMenu(false); }} className="w-full text-left px-3 py-2 text-zinc-300 hover:text-white hover:bg-emerald-900/20 rounded cursor-pointer">About RAMS</button>
+                      <button onClick={() => { setActiveTab('help'); setShowUserMenu(false); }} className="w-full text-left px-3 py-2 text-zinc-300 hover:text-white hover:bg-emerald-900/20 rounded cursor-pointer">Help & Support</button>
                       <div className="border-t border-emerald-900/40 my-1" />
-                      <button onClick={() => alert('Session logged out.')} className="w-full text-left px-3 py-1.5 text-red-400 hover:bg-red-950/20 rounded">Disconnect</button>
+                      <button onClick={() => alert('Logged out.')} className="w-full text-left px-3 py-1.5 text-red-400 hover:bg-red-950/20 rounded cursor-pointer">Disconnect</button>
                     </div>
                   )}
                 </div>
@@ -785,7 +759,6 @@ export default function App() {
               {/* ---------------- 1. HOME TAB ---------------- */}
               {activeTab === 'home' && (
                 <div className="space-y-8 animate-fadeIn">
-                  {/* Hero banner */}
                   <div className="relative rounded-3xl p-6 sm:p-10 border border-emerald-800/30 bg-gradient-to-r from-[#07130a]/90 via-[#0a1e10]/70 to-[#07130a]/40 overflow-hidden shadow-2xl">
                     <div className="relative z-10 max-w-2xl space-y-4">
                       <h1 className="text-4xl sm:text-5xl font-black text-white tracking-tight">RAMS</h1>
@@ -796,13 +769,12 @@ export default function App() {
                       </p>
 
                       <p className="text-xs sm:text-sm text-zinc-300 leading-relaxed max-w-lg">
-                        Host or join encrypted virtual army conferences directly on this website with live video, audio, screen share, and instant messaging.
+                        A secure in-app meeting portal for hosting and joining encrypted virtual meetings directly on this platform.
                       </p>
 
-                      {/* Action buttons */}
                       <div className="flex flex-wrap items-center gap-3 pt-3">
                         <button
-                          onClick={() => launchInAppMeeting('Instant Tactical Conference')}
+                          onClick={() => launchInAppMeeting('Tactical Meeting')}
                           className="flex items-center space-x-2 bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-slate-950 font-bold px-6 py-3 rounded-full text-xs sm:text-sm transition-all shadow-lg shadow-emerald-500/20 cursor-pointer"
                         >
                           <Video className="w-4 h-4 fill-current" />
@@ -867,7 +839,7 @@ export default function App() {
                         <Headphones className="w-5 h-5" />
                       </div>
                       <h3 className="font-bold text-sm text-white">24/7 Support</h3>
-                      <p className="text-xs text-zinc-400 mt-1">We're here to help</p>
+                      <p className="text-xs text-zinc-400 mt-1">Help & documentation</p>
                     </div>
                   </div>
                 </div>
@@ -896,17 +868,16 @@ export default function App() {
                     </button>
                   </div>
 
-                  {/* 2 Top Action Cards */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                     <div className="p-6 rounded-2xl bg-[#08140b]/90 border border-emerald-800/30 flex flex-col justify-between shadow-xl">
                       <div>
                         <h3 className="text-base font-bold text-white">Start a New Meeting</h3>
-                        <p className="text-xs text-zinc-400 mt-1">Begin an encrypted meeting on the website instantly.</p>
+                        <p className="text-xs text-zinc-400 mt-1">Begin an in-browser meeting instantly.</p>
                       </div>
 
                       <div className="pt-6">
                         <button
-                          onClick={() => launchInAppMeeting('Live Tactical Meeting')}
+                          onClick={() => launchInAppMeeting('Live Session')}
                           className="flex items-center space-x-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-5 py-2.5 rounded-full text-xs transition-all shadow-md cursor-pointer"
                         >
                           <Video className="w-4 h-4 fill-current" />
@@ -949,47 +920,59 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Upcoming Meetings List */}
+                  {/* Meetings List */}
                   <div className="pt-4">
                     <div className="flex items-center justify-between mb-3">
-                      <h3 className="text-sm font-bold text-white">Upcoming Meetings</h3>
-                      <button 
-                        onClick={() => setActiveTab('schedule')}
-                        className="text-xs text-emerald-400 hover:underline flex items-center space-x-1 cursor-pointer"
-                      >
-                        <span>View All</span>
-                        <ArrowRight className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-
-                    <div className="space-y-3">
-                      {meetings.slice(0, 3).map((item) => (
-                        <div
-                          key={item.id}
-                          className="p-4 rounded-xl bg-[#08140b]/70 border border-emerald-900/30 hover:border-emerald-700/50 flex items-center justify-between transition-all"
+                      <h3 className="text-sm font-bold text-white">Your Meetings ({meetings.length})</h3>
+                      {meetings.length > 0 && (
+                        <button 
+                          onClick={() => setActiveTab('schedule')}
+                          className="text-xs text-emerald-400 hover:underline flex items-center space-x-1 cursor-pointer"
                         >
-                          <div className="flex items-center space-x-3.5">
-                            <div className="p-2.5 bg-emerald-950/60 border border-emerald-800/40 rounded-xl text-emerald-400">
-                              <Calendar className="w-5 h-5" />
-                            </div>
-                            <div>
-                              <h4 className="text-sm font-bold text-white">{item.title}</h4>
-                              <p className="text-xs text-zinc-400">
-                                {item.dateStr} &bull; {item.timeStr}
-                              </p>
-                            </div>
-                          </div>
-
-                          <button
-                            onClick={() => launchInAppMeeting(item.title, item.code)}
-                            className="flex items-center space-x-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-4 py-2 rounded-xl text-xs transition-all cursor-pointer"
-                          >
-                            <Play className="w-3.5 h-3.5 fill-current" />
-                            <span>Join</span>
-                          </button>
-                        </div>
-                      ))}
+                          <span>Manage All</span>
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                     </div>
+
+                    {meetings.length === 0 ? (
+                      <div className="p-8 text-center border border-dashed border-emerald-900/40 rounded-2xl bg-[#071109]/50">
+                        <Calendar className="w-8 h-8 text-emerald-500/40 mx-auto mb-2" />
+                        <h4 className="text-xs font-bold text-zinc-300">No scheduled meetings</h4>
+                        <p className="text-[11px] text-zinc-500 mt-1">
+                          Click "+ New Meeting" above to create your first session.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {meetings.slice(0, 3).map((item) => (
+                          <div
+                            key={item.id}
+                            className="p-4 rounded-xl bg-[#08140b]/70 border border-emerald-900/30 hover:border-emerald-700/50 flex items-center justify-between transition-all"
+                          >
+                            <div className="flex items-center space-x-3.5">
+                              <div className="p-2.5 bg-emerald-950/60 border border-emerald-800/40 rounded-xl text-emerald-400">
+                                <Calendar className="w-5 h-5" />
+                              </div>
+                              <div>
+                                <h4 className="text-sm font-bold text-white">{item.title}</h4>
+                                <p className="text-xs text-zinc-400">
+                                  {item.dateStr} &bull; {item.timeStr}
+                                </p>
+                              </div>
+                            </div>
+
+                            <button
+                              onClick={() => launchInAppMeeting(item.title, item.code)}
+                              className="flex items-center space-x-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-4 py-2 rounded-xl text-xs transition-all cursor-pointer"
+                            >
+                              <Play className="w-3.5 h-3.5 fill-current" />
+                              <span>Join</span>
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -1037,7 +1020,7 @@ export default function App() {
                           : 'text-zinc-400 hover:text-white'
                       }`}
                     >
-                      Past Meetings
+                      Past
                     </button>
                     <button
                       onClick={() => setScheduleFilter('all')}
@@ -1047,53 +1030,76 @@ export default function App() {
                           : 'text-zinc-400 hover:text-white'
                       }`}
                     >
-                      All Meetings
+                      All ({meetings.length})
                     </button>
                   </div>
 
-                  {/* Schedule list items */}
+                  {/* Clean List */}
                   <div className="space-y-3.5">
-                    {filteredMeetings.map((item) => (
-                      <div
-                        key={item.id}
-                        className="p-4 sm:p-5 rounded-2xl bg-[#08140b]/80 border border-emerald-900/30 hover:border-emerald-700/50 flex flex-col sm:flex-row sm:items-center justify-between gap-4 transition-all"
-                      >
-                        <div className="flex items-center space-x-4">
-                          <div className="flex flex-col items-center justify-center w-14 h-14 rounded-xl bg-[#050d07] border border-emerald-800/40 text-center shrink-0">
-                            <span className="text-[10px] font-bold text-zinc-400 uppercase">{item.dayName}</span>
-                            <span className="text-lg font-black text-white leading-none my-0.5">{item.dayNum}</span>
-                            <span className="text-[9px] font-bold text-emerald-400 uppercase">{item.month}</span>
-                          </div>
+                    {filteredMeetings.length === 0 ? (
+                      <div className="p-10 text-center border border-dashed border-emerald-900/40 rounded-2xl bg-[#071109]/50">
+                        <Calendar className="w-9 h-9 text-emerald-500/30 mx-auto mb-2" />
+                        <h4 className="text-sm font-bold text-zinc-300">No scheduled meetings</h4>
+                        <p className="text-xs text-zinc-500 mt-1">
+                          You haven't scheduled any meetings yet.
+                        </p>
+                        <button
+                          onClick={() => setShowNewMeetingModal(true)}
+                          className="mt-4 bg-[#0d2415] hover:bg-[#13351f] border border-emerald-700/50 text-emerald-400 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer"
+                        >
+                          Create Schedule
+                        </button>
+                      </div>
+                    ) : (
+                      filteredMeetings.map((item) => (
+                        <div
+                          key={item.id}
+                          className="p-4 sm:p-5 rounded-2xl bg-[#08140b]/80 border border-emerald-900/30 hover:border-emerald-700/50 flex flex-col sm:flex-row sm:items-center justify-between gap-4 transition-all"
+                        >
+                          <div className="flex items-center space-x-4">
+                            <div className="flex flex-col items-center justify-center w-14 h-14 rounded-xl bg-[#050d07] border border-emerald-800/40 text-center shrink-0">
+                              <span className="text-[10px] font-bold text-zinc-400 uppercase">{item.dayName}</span>
+                              <span className="text-lg font-black text-white leading-none my-0.5">{item.dayNum}</span>
+                              <span className="text-[9px] font-bold text-emerald-400 uppercase">{item.month}</span>
+                            </div>
 
-                          <div>
-                            <h4 className="text-base font-bold text-white">{item.title}</h4>
-                            <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-400 mt-1">
-                              <span className="flex items-center space-x-1 text-emerald-300">
-                                <Clock className="w-3.5 h-3.5" />
-                                <span>{item.timeStr}</span>
-                              </span>
-                              <span>&bull;</span>
-                              <span>Host: <strong className="text-zinc-300">{item.host}</strong></span>
+                            <div>
+                              <h4 className="text-base font-bold text-white">{item.title}</h4>
+                              <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-400 mt-1">
+                                <span className="flex items-center space-x-1 text-emerald-300">
+                                  <Clock className="w-3.5 h-3.5" />
+                                  <span>{item.timeStr}</span>
+                                </span>
+                                <span>&bull;</span>
+                                <span>Host: <strong className="text-zinc-300">{item.host}</strong></span>
+                              </div>
                             </div>
                           </div>
-                        </div>
 
-                        <div className="flex items-center space-x-3 self-end sm:self-center">
-                          <button
-                            onClick={() => launchInAppMeeting(item.title, item.code)}
-                            className="flex items-center space-x-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-5 py-2.5 rounded-xl text-xs transition-all shadow-md cursor-pointer"
-                          >
-                            <Play className="w-3.5 h-3.5 fill-current" />
-                            <span>Join</span>
-                          </button>
+                          <div className="flex items-center space-x-2 self-end sm:self-center">
+                            <button
+                              onClick={() => launchInAppMeeting(item.title, item.code)}
+                              className="flex items-center space-x-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-4 py-2 rounded-xl text-xs transition-all shadow-md cursor-pointer"
+                            >
+                              <Play className="w-3.5 h-3.5 fill-current" />
+                              <span>Join</span>
+                            </button>
+                            <button
+                              onClick={() => handleDeleteMeeting(item.id)}
+                              className="p-2 rounded-xl bg-red-950/30 border border-red-900/40 text-red-400 hover:bg-red-900/40 transition-all cursor-pointer"
+                              title="Delete meeting"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      ))
+                    )}
                   </div>
 
                   <div className="p-3 bg-[#08140b] border border-emerald-900/40 rounded-xl flex items-center space-x-2 text-xs text-zinc-400">
                     <Info className="w-4 h-4 text-emerald-400 shrink-0" />
-                    <span>All times are in Nigerian Time (WAT)</span>
+                    <span>All times in Nigerian Time (WAT)</span>
                   </div>
                 </div>
               )}
@@ -1128,7 +1134,7 @@ export default function App() {
                         <h3 className="text-3xl font-black text-white">RAMS</h3>
                         <h4 className="text-base font-bold text-emerald-400">Remote Army Meeting System</h4>
                         <p className="text-xs sm:text-sm text-zinc-300 leading-relaxed max-w-xl">
-                          RAMS is a secure in-browser communications platform designed to facilitate real-time virtual meetings across the Nigerian Army without leaving the website.
+                          RAMS is a secure communication platform providing real-time in-app video conferencing, screen sharing, and messaging for defense and military operations.
                         </p>
                       </div>
                     </div>
@@ -1140,7 +1146,7 @@ export default function App() {
                           <span>Our Mission</span>
                         </div>
                         <p className="text-xs text-zinc-300 leading-relaxed">
-                          To enhance command communication, inter-brigade collaboration, and operational efficiency through self-hosted digital meeting rooms.
+                          To deliver operational readiness and unified command communications through self-contained digital meeting infrastructure.
                         </p>
                       </div>
 
@@ -1149,19 +1155,19 @@ export default function App() {
                         <ul className="space-y-2 text-xs text-zinc-300">
                           <li className="flex items-center space-x-2">
                             <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                            <span>Held 100% On-Website (No external redirect)</span>
+                            <span>100% In-Browser Audio & Video</span>
                           </li>
                           <li className="flex items-center space-x-2">
                             <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                            <span>Real-Time WebCam & Microphone Transmission</span>
-                          </li>
-                          <li className="flex items-center space-x-2">
-                            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                            <span>In-Meeting Encrypted Chat & Personnel Roster</span>
+                            <span>Encrypted In-Meeting Text Messaging</span>
                           </li>
                           <li className="flex items-center space-x-2">
                             <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
                             <span>Screen Sharing & Hand Raising</span>
+                          </li>
+                          <li className="flex items-center space-x-2">
+                            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                            <span>Zero Third-Party Dependency</span>
                           </li>
                         </ul>
                       </div>
@@ -1187,10 +1193,10 @@ export default function App() {
                     <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-3">Quick Help</h3>
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5">
                       {[
-                        { title: 'Getting Started', icon: Play, action: () => launchInAppMeeting('Introductory Session') },
+                        { title: 'Getting Started', icon: Play, action: () => launchInAppMeeting('Test Meeting') },
                         { title: 'Joining a Meeting', icon: Users, action: () => setShowJoinModal(true) },
                         { title: 'Scheduling Meetings', icon: Calendar, action: () => setActiveTab('schedule') },
-                        { title: 'Troubleshooting', icon: Headphones, action: () => alert('Please ensure your browser camera and microphone access permissions are granted.') },
+                        { title: 'Troubleshooting', icon: Headphones, action: () => alert('Ensure microphone and camera permissions are allowed in your browser.') },
                       ].map((item, idx) => {
                         const Icon = item.icon;
                         return (
@@ -1213,21 +1219,20 @@ export default function App() {
                   <div className="p-6 rounded-3xl bg-[#08140b]/80 border border-emerald-900/30 space-y-3">
                     <div className="flex items-center justify-between pb-2">
                       <h3 className="text-sm font-bold text-white">Frequently Asked Questions</h3>
-                      <span className="text-xs text-emerald-400 hover:underline cursor-pointer">View All &rarr;</span>
                     </div>
 
                     {[
                       {
                         q: 'How do I start a meeting?',
-                        a: 'Click "Start a Meeting" anywhere on the portal. Your live meeting room will immediately launch right inside this browser window with your webcam and controls.',
+                        a: 'Click "Start a Meeting" on the home screen or in the Meetings tab. Your live meeting room opens immediately inside this website.',
                       },
                       {
-                        q: 'Do I need an external app or account?',
-                        a: 'No. RAMS runs natively on this website. You do not need to install anything or leave the webpage.',
+                        q: 'How do others join my meeting?',
+                        a: 'Copy the room code displayed in your meeting room top bar and share it. Other participants enter that code into "Join with Code" to enter.',
                       },
                       {
-                        q: 'How do other officers join?',
-                        a: 'Share your 6-digit room code. Other officers click "Join with Code", enter the room code, and are instantly brought into the meeting room.',
+                        q: 'How do I enable camera and audio?',
+                        a: 'When your browser requests permission for camera and microphone, click Allow. You can toggle them anytime from the call control bar.',
                       },
                     ].map((faq, idx) => {
                       const isOpen = openFaq === idx;
@@ -1238,7 +1243,7 @@ export default function App() {
                         >
                           <button
                             onClick={() => setOpenFaq(isOpen ? null : idx)}
-                            className="w-full flex items-center justify-between p-3.5 text-left text-xs font-bold text-zinc-200 hover:text-white"
+                            className="w-full flex items-center justify-between p-3.5 text-left text-xs font-bold text-zinc-200 hover:text-white cursor-pointer"
                           >
                             <span>{faq.q}</span>
                             {isOpen ? <ChevronUp className="w-4 h-4 text-emerald-400" /> : <ChevronDown className="w-4 h-4 text-zinc-400" />}
@@ -1261,12 +1266,12 @@ export default function App() {
                       </div>
                       <div>
                         <h4 className="text-xs font-bold text-white">Still need help?</h4>
-                        <p className="text-[11px] text-zinc-400">Contact the IT Support Team</p>
+                        <p className="text-[11px] text-zinc-400">Contact the technical support team</p>
                       </div>
                     </div>
 
                     <button
-                      onClick={() => alert('Support ticket dispatched to Signals HQ.')}
+                      onClick={() => alert('Support request acknowledged.')}
                       className="bg-[#0e2716] hover:bg-[#143a20] border border-emerald-700/50 text-emerald-300 font-bold px-4 py-2 rounded-xl text-xs transition-all cursor-pointer"
                     >
                       Contact Support
@@ -1285,29 +1290,27 @@ export default function App() {
                 <span className="text-emerald-400 font-semibold">RAMS v1.0</span>
               </div>
               <div>
-                <span>SECURE MILITARY COMMUNICATIONS ENCLAVE</span>
+                <span>SECURE COMMUNICATIONS ENCLAVE</span>
               </div>
             </footer>
           </div>
         </div>
       )}
 
-      {/* ======================================================== */}
-      {/* MODAL: Join with Code                                    */}
-      {/* ======================================================== */}
+      {/* MODAL: Join with Code */}
       {showJoinModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fadeIn">
           <div className="bg-[#09150d] border border-emerald-600/40 rounded-2xl p-6 max-w-md w-full shadow-2xl relative">
             <button
               onClick={() => setShowJoinModal(false)}
-              className="absolute top-4 right-4 text-zinc-400 hover:text-white"
+              className="absolute top-4 right-4 text-zinc-400 hover:text-white cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
 
             <h3 className="text-xl font-black text-white mb-1">Enter Meeting Code</h3>
             <p className="text-xs text-zinc-400 mb-5">
-              Enter the meeting room code provided by your unit commander.
+              Enter the room code provided by the meeting host.
             </p>
 
             <form
@@ -1323,7 +1326,7 @@ export default function App() {
             >
               <input
                 type="text"
-                placeholder="e.g. HQ-OPS-432 or rams-928"
+                placeholder="e.g. RAMS-4821"
                 value={joinCodeInput}
                 onChange={(e) => setJoinCodeInput(e.target.value)}
                 autoFocus
@@ -1334,7 +1337,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setShowJoinModal(false)}
-                  className="px-4 py-2 text-xs font-semibold text-zinc-400 hover:text-white"
+                  className="px-4 py-2 text-xs font-semibold text-zinc-400 hover:text-white cursor-pointer"
                 >
                   Cancel
                 </button>
@@ -1352,30 +1355,28 @@ export default function App() {
         </div>
       )}
 
-      {/* ======================================================== */}
-      {/* MODAL: New Meeting / Schedule                            */}
-      {/* ======================================================== */}
+      {/* MODAL: New Meeting / Schedule */}
       {showNewMeetingModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fadeIn">
           <div className="bg-[#09150d] border border-emerald-600/40 rounded-2xl p-6 max-w-md w-full shadow-2xl relative">
             <button
               onClick={() => setShowNewMeetingModal(false)}
-              className="absolute top-4 right-4 text-zinc-400 hover:text-white"
+              className="absolute top-4 right-4 text-zinc-400 hover:text-white cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
 
-            <h3 className="text-xl font-black text-white mb-1">Create New Meeting</h3>
+            <h3 className="text-xl font-black text-white mb-1">Create Meeting</h3>
             <p className="text-xs text-zinc-400 mb-4">
-              Set up a session for your brigade or unit.
+              Enter meeting details.
             </p>
 
             <form onSubmit={handleCreateMeeting} className="space-y-3.5">
               <div>
-                <label className="text-[11px] font-bold text-zinc-300 block mb-1">Meeting Title</label>
+                <label className="text-[11px] font-bold text-zinc-300 block mb-1">Title</label>
                 <input
                   type="text"
-                  placeholder="e.g. Tactical Intel Review"
+                  placeholder="e.g. Briefing Session"
                   value={newTitle}
                   onChange={(e) => setNewTitle(e.target.value)}
                   required
@@ -1387,7 +1388,7 @@ export default function App() {
                 <label className="text-[11px] font-bold text-zinc-300 block mb-1">Host / Unit</label>
                 <input
                   type="text"
-                  placeholder="e.g. 7 Division Signals"
+                  placeholder="e.g. Command"
                   value={newHost}
                   onChange={(e) => setNewHost(e.target.value)}
                   className="w-full bg-[#050c07] border border-emerald-800/80 focus:border-emerald-400 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-zinc-500 outline-none"
@@ -1398,7 +1399,7 @@ export default function App() {
                 <div>
                   <label className="text-[11px] font-bold text-zinc-300 block mb-1">Date</label>
                   <input
-                    type="text"
+                    type="date"
                     value={newDate}
                     onChange={(e) => setNewDate(e.target.value)}
                     className="w-full bg-[#050c07] border border-emerald-800/80 focus:border-emerald-400 rounded-xl px-3 py-2 text-xs text-white outline-none"
@@ -1410,6 +1411,7 @@ export default function App() {
                     type="text"
                     value={newTime}
                     onChange={(e) => setNewTime(e.target.value)}
+                    placeholder="10:00 AM - 11:00 AM"
                     className="w-full bg-[#050c07] border border-emerald-800/80 focus:border-emerald-400 rounded-xl px-3 py-2 text-xs text-white outline-none"
                   />
                 </div>
@@ -1419,7 +1421,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setShowNewMeetingModal(false)}
-                  className="px-4 py-2 text-xs font-semibold text-zinc-400 hover:text-white"
+                  className="px-4 py-2 text-xs font-semibold text-zinc-400 hover:text-white cursor-pointer"
                 >
                   Cancel
                 </button>
@@ -1427,7 +1429,7 @@ export default function App() {
                   type="submit"
                   className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-5 py-2.5 rounded-xl text-xs transition-all cursor-pointer"
                 >
-                  Create & Launch Now
+                  Schedule
                 </button>
               </div>
             </form>
