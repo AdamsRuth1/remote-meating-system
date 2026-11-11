@@ -9,7 +9,6 @@ import {
   Bell,
   ChevronDown,
   ArrowRight,
-  ShieldCheck,
   Headphones,
   Plus,
   Play,
@@ -33,8 +32,17 @@ import {
   Lock,
   Copy,
   Check,
-  Trash2
+  Trash2,
+  Download,
+  Disc,
+  StopCircle
 } from 'lucide-react';
+import { 
+  type SavedRecording, 
+  getAllRecordings, 
+  saveRecordingToPlatform, 
+  deleteRecordingFromPlatform 
+} from './recordingsStorage';
 
 interface Meeting {
   id: string;
@@ -58,10 +66,10 @@ interface ChatMessage {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'home' | 'meetings' | 'schedule' | 'about' | 'help'>('home');
+  const [activeTab, setActiveTab] = useState<'home' | 'meetings' | 'recordings' | 'schedule' | 'about' | 'help'>('home');
   const [scheduleFilter, setScheduleFilter] = useState<'upcoming' | 'past' | 'all'>('upcoming');
   
-  // Clean state: loaded from localStorage or initially empty (no demo data)
+  // Clean state: loaded from localStorage
   const [meetings, setMeetings] = useState<Meeting[]>(() => {
     try {
       const saved = localStorage.getItem('rams_meetings');
@@ -71,16 +79,33 @@ export default function App() {
     }
   });
 
-  // Persist user-created meetings
+  // Saved recordings stored inside the platform (IndexedDB)
+  const [recordings, setRecordings] = useState<SavedRecording[]>([]);
+  const [selectedPlayback, setSelectedPlayback] = useState<SavedRecording | null>(null);
+
+  useEffect(() => {
+    loadPlatformRecordings();
+  }, []);
+
+  const loadPlatformRecordings = async () => {
+    try {
+      const recs = await getAllRecordings();
+      setRecordings(recs);
+    } catch (err) {
+      console.error('Failed to load recordings from platform:', err);
+    }
+  };
+
+  // Persist user meetings
   useEffect(() => {
     try {
       localStorage.setItem('rams_meetings', JSON.stringify(meetings));
     } catch {
-      // Ignore storage errors
+      // Ignore
     }
   }, [meetings]);
 
-  // In-app Video Meeting Room State
+  // Meeting Room State
   const [inActiveMeeting, setInActiveMeeting] = useState(false);
   const [currentMeetingRoom, setCurrentMeetingRoom] = useState<{ id: string; title: string; code: string }>({
     id: '',
@@ -98,17 +123,24 @@ export default function App() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
 
-  // In-meeting Chat (Plain & clean, start empty)
+  // Recording State inside meeting
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
+  const recordingTimerRef = useRef<any>(null);
+
+  // In-meeting Chat
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [messageInput, setMessageInput] = useState('');
 
-  // Local WebCam Video Stream
+  // Media Streams
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const screenShareVideoRef = useRef<HTMLVideoElement>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
 
-  // Modals & form states
+  // Modals & inputs
   const [showJoinModal, setShowJoinModal] = useState(false);
   const [showNewMeetingModal, setShowNewMeetingModal] = useState(false);
   const [joinCodeInput, setJoinCodeInput] = useState('');
@@ -120,12 +152,12 @@ export default function App() {
   const [newTime, setNewTime] = useState('10:00 AM - 11:00 AM');
   const [newHost, setNewHost] = useState('My Unit');
 
-  // FAQ accordion
+  // FAQ
   const [openFaq, setOpenFaq] = useState<number | null>(null);
   const [showNotifications, setShowNotifications] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
 
-  // Launch in-app live meeting
+  // Launch live meeting
   const launchInAppMeeting = (title: string, code?: string) => {
     const roomCode = code || ('RAMS-' + Math.floor(1000 + Math.random() * 9000));
     setCurrentMeetingRoom({
@@ -134,6 +166,8 @@ export default function App() {
       code: roomCode,
     });
     setChatMessages([]);
+    setIsRecording(false);
+    setRecordingSeconds(0);
     setInActiveMeeting(true);
   };
 
@@ -150,7 +184,7 @@ export default function App() {
           }
         })
         .catch(() => {
-          console.log('Camera/Mic permission not available or denied.');
+          console.log('Camera/Mic permission not available.');
         });
     }
 
@@ -161,7 +195,7 @@ export default function App() {
     };
   }, [inActiveMeeting, cameraEnabled]);
 
-  // Screen Share Toggle
+  // Screen Share
   const toggleScreenShare = async () => {
     if (!isScreenSharing) {
       try {
@@ -187,6 +221,78 @@ export default function App() {
     }
   };
 
+  // -------------------------------------------------------------
+  // RECORDING FUNCTIONALITY (Native in-browser capture & IndexedDB save)
+  // -------------------------------------------------------------
+  const startRecording = () => {
+    try {
+      const streamToRecord = isScreenSharing && screenStreamRef.current 
+        ? screenStreamRef.current 
+        : localStreamRef.current;
+
+      if (!streamToRecord) {
+        alert('Cannot start recording: No video or audio stream found.');
+        return;
+      }
+
+      recordedChunksRef.current = [];
+      const options = { mimeType: 'video/webm;codecs=vp9,opus' };
+      let recorder: MediaRecorder;
+      try {
+        recorder = new MediaRecorder(streamToRecord, options);
+      } catch {
+        recorder = new MediaRecorder(streamToRecord);
+      }
+
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          recordedChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstop = async () => {
+        const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+        const now = new Date();
+        const newRecord: SavedRecording = {
+          id: 'rec-' + Date.now(),
+          meetingTitle: currentMeetingRoom.title,
+          meetingCode: currentMeetingRoom.code,
+          timestamp: Date.now(),
+          dateStr: now.toLocaleDateString(),
+          timeStr: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          durationSeconds: recordingSeconds,
+          blob: blob,
+          sizeBytes: blob.size,
+        };
+
+        await saveRecordingToPlatform(newRecord);
+        await loadPlatformRecordings();
+        alert(`Recording saved directly to RAMS platform! Access it anytime in the "Recordings" tab.`);
+      };
+
+      recorder.start(1000);
+      mediaRecorderRef.current = recorder;
+      setIsRecording(true);
+      setRecordingSeconds(0);
+
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingSeconds(prev => prev + 1);
+      }, 1000);
+
+    } catch (err) {
+      console.error('Failed to start recording:', err);
+      alert('Could not start recording on this device.');
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+      clearInterval(recordingTimerRef.current);
+    }
+  };
+
   const toggleCamera = () => {
     if (cameraEnabled && localStreamRef.current) {
       localStreamRef.current.getVideoTracks().forEach((track) => track.stop());
@@ -204,6 +310,9 @@ export default function App() {
   };
 
   const leaveMeeting = () => {
+    if (isRecording) {
+      stopRecording();
+    }
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((t) => t.stop());
       localStreamRef.current = null;
@@ -268,6 +377,30 @@ export default function App() {
     setMeetings(meetings.filter(m => m.id !== id));
   };
 
+  const handleDeleteRecording = async (id: string) => {
+    if (confirm('Delete this recorded meeting from the platform?')) {
+      await deleteRecordingFromPlatform(id);
+      await loadPlatformRecordings();
+      if (selectedPlayback?.id === id) {
+        setSelectedPlayback(null);
+      }
+    }
+  };
+
+  const formatSeconds = (sec: number) => {
+    const mins = Math.floor(sec / 60);
+    const secs = sec % 60;
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  };
+
+  const formatBytes = (bytes: number) => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
+
   const filteredMeetings = meetings.filter((m) => {
     if (scheduleFilter === 'upcoming') return m.status === 'upcoming';
     if (scheduleFilter === 'past') return m.status === 'past';
@@ -277,7 +410,7 @@ export default function App() {
   return (
     <div className="relative min-h-screen w-full bg-[#050906] text-slate-100 flex flex-col justify-between selection:bg-emerald-600 selection:text-white font-sans antialiased overflow-x-hidden">
       
-      {/* Subtle Topo Ambience */}
+      {/* Topo Ambience */}
       <div className="fixed inset-0 pointer-events-none z-0">
         <div 
           className="absolute inset-0 opacity-[0.10]"
@@ -291,12 +424,12 @@ export default function App() {
       </div>
 
       {/* ========================================================================= */}
-      {/* CLEAN IN-APP LIVE MEETING ROOM (ONLY YOU + LIVE ROOM PARTICIPANTS)       */}
+      {/* IN-APP LIVE MEETING ROOM (WITH NATIVE PLATFORM RECORDING)                  */}
       {/* ========================================================================= */}
       {inActiveMeeting ? (
         <div className="relative z-20 flex flex-col h-screen w-screen bg-[#040805] text-white">
           
-          {/* Meeting Room Top Bar */}
+          {/* Top Bar with Live Recording Indicator */}
           <header className="h-14 border-b border-[#122818] bg-[#071109] px-4 sm:px-6 flex items-center justify-between">
             <div className="flex items-center space-x-3">
               <div className="flex items-center space-x-2">
@@ -317,6 +450,23 @@ export default function App() {
             </div>
 
             <div className="flex items-center space-x-2 sm:space-x-3">
+              {/* Recording Status Tag */}
+              {isRecording ? (
+                <div className="flex items-center space-x-1.5 bg-red-950/80 border border-red-500/60 px-3 py-1 rounded-full text-xs text-red-400 font-mono animate-pulse">
+                  <span className="w-2.5 h-2.5 rounded-full bg-red-500" />
+                  <span>RECORDING: {formatSeconds(recordingSeconds)}</span>
+                </div>
+              ) : (
+                <button
+                  onClick={startRecording}
+                  className="flex items-center space-x-1.5 bg-[#0e2415] hover:bg-[#14331e] border border-emerald-700/50 text-emerald-300 text-xs px-3 py-1.5 rounded-lg cursor-pointer"
+                  title="Record meeting and save to platform"
+                >
+                  <Disc className="w-3.5 h-3.5 text-red-400" />
+                  <span className="hidden sm:inline">Record Meeting</span>
+                </button>
+              )}
+
               <button
                 onClick={() => {
                   navigator.clipboard.writeText(currentMeetingRoom.code);
@@ -328,22 +478,15 @@ export default function App() {
                 {copiedCode ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                 <span className="hidden sm:inline">{copiedCode ? 'Copied' : 'Copy Code'}</span>
               </button>
-
-              <div className="flex items-center space-x-1 bg-[#09170e] border border-emerald-900 px-2.5 py-1 rounded-full text-xs text-emerald-400 font-mono">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                <span>ONLINE</span>
-              </div>
             </div>
           </header>
 
-          {/* Meeting Stage Area (Clean: Local Stream + Screen Share if active) */}
+          {/* Meeting Stage Area */}
           <div className="flex-1 flex overflow-hidden">
             <div className="flex-1 p-3 sm:p-5 flex flex-col justify-center items-center overflow-y-auto">
               
               {isScreenSharing ? (
-                /* Screen sharing active: 2 tiles side-by-side or stacked */
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 w-full h-full max-h-[820px] max-w-6xl">
-                  {/* Screen Share Tile */}
                   <div className="lg:col-span-2 relative rounded-2xl bg-[#09150d] border border-blue-500/50 overflow-hidden flex items-center justify-center shadow-xl">
                     <video
                       ref={screenShareVideoRef}
@@ -356,7 +499,6 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Your Camera Feed Tile */}
                   <div className="relative rounded-2xl bg-[#09150d] border border-emerald-800/40 overflow-hidden flex flex-col items-center justify-center shadow-xl">
                     {cameraEnabled ? (
                       <video
@@ -381,7 +523,6 @@ export default function App() {
                   </div>
                 </div>
               ) : (
-                /* Solo / Primary Meeting Stage: Clean, focused view */
                 <div className="relative w-full h-full max-h-[720px] max-w-4xl rounded-2xl bg-[#08120b] border border-emerald-800/40 overflow-hidden flex flex-col items-center justify-center shadow-2xl">
                   {cameraEnabled ? (
                     <video
@@ -401,7 +542,6 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* Clean Bottom Overlay */}
                   <div className="absolute bottom-4 left-4 flex items-center space-x-2 bg-black/70 backdrop-blur-md px-3.5 py-1.5 rounded-xl text-xs font-semibold">
                     <span>You (Host)</span>
                     {!micEnabled && <MicOff className="w-3.5 h-3.5 text-red-400" />}
@@ -414,7 +554,6 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* Room code banner inside video stage for easy sharing */}
                   <div className="absolute top-4 right-4 bg-black/60 backdrop-blur px-3 py-1.5 rounded-xl border border-emerald-900/60 text-xs text-zinc-300 flex items-center space-x-2">
                     <span className="text-emerald-400 font-mono font-bold">Code: {currentMeetingRoom.code}</span>
                   </div>
@@ -519,11 +658,31 @@ export default function App() {
           {/* Meeting Control Footer */}
           <footer className="h-20 border-t border-[#122818] bg-[#071109] px-4 flex items-center justify-between">
             <div className="hidden md:flex items-center space-x-3 text-xs text-zinc-400">
-              <span className="font-mono text-emerald-400">STATUS: SECURE ENCLAVE</span>
+              <span className="font-mono text-emerald-400">STATUS: ACTIVE SESSION</span>
             </div>
 
-            {/* Call Action Deck */}
+            {/* Action Bar */}
             <div className="flex items-center space-x-2 sm:space-x-3 mx-auto md:mx-0">
+              {/* Record / Stop Record Button */}
+              {isRecording ? (
+                <button
+                  onClick={stopRecording}
+                  className="p-3.5 rounded-full border bg-red-600 border-red-500 text-white animate-pulse transition-all cursor-pointer"
+                  title="Stop recording and save"
+                >
+                  <StopCircle className="w-5 h-5" />
+                </button>
+              ) : (
+                <button
+                  onClick={startRecording}
+                  className="p-3.5 rounded-full border bg-[#102416] border-emerald-700/60 text-zinc-300 hover:text-red-400 hover:bg-[#16331f] transition-all cursor-pointer"
+                  title="Record Meeting"
+                >
+                  <Disc className="w-5 h-5" />
+                </button>
+              )}
+
+              {/* Mic Toggle */}
               <button
                 onClick={toggleMic}
                 className={`p-3.5 rounded-full border transition-all cursor-pointer ${
@@ -536,6 +695,7 @@ export default function App() {
                 {micEnabled ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
               </button>
 
+              {/* Camera Toggle */}
               <button
                 onClick={toggleCamera}
                 className={`p-3.5 rounded-full border transition-all cursor-pointer ${
@@ -548,6 +708,7 @@ export default function App() {
                 {cameraEnabled ? <Video className="w-5 h-5" /> : <VideoOff className="w-5 h-5" />}
               </button>
 
+              {/* Screen Share */}
               <button
                 onClick={toggleScreenShare}
                 className={`p-3.5 rounded-full border transition-all cursor-pointer ${
@@ -560,6 +721,7 @@ export default function App() {
                 <Share2 className="w-5 h-5" />
               </button>
 
+              {/* Raise Hand */}
               <button
                 onClick={() => setHandRaised(!handRaised)}
                 className={`p-3.5 rounded-full border transition-all cursor-pointer ${
@@ -572,6 +734,7 @@ export default function App() {
                 <Hand className="w-5 h-5" />
               </button>
 
+              {/* Chat */}
               <button
                 onClick={() => {
                   setShowChat(!showChat);
@@ -587,6 +750,7 @@ export default function App() {
                 <MessageSquare className="w-5 h-5" />
               </button>
 
+              {/* Personnel */}
               <button
                 onClick={() => {
                   setShowParticipantsList(!showParticipantsList);
@@ -602,6 +766,7 @@ export default function App() {
                 <Users className="w-5 h-5" />
               </button>
 
+              {/* End Meeting */}
               <button
                 onClick={leaveMeeting}
                 className="flex items-center space-x-2 bg-red-600 hover:bg-red-500 active:scale-95 text-white font-bold px-5 py-3 rounded-full transition-all shadow-lg shadow-red-900/40 cursor-pointer"
@@ -625,7 +790,7 @@ export default function App() {
       ) : (
 
         /* ========================================================================= */
-        /* STANDARD PORTAL SHELL (HOME, MEETINGS, SCHEDULE, ABOUT, HELP)             */
+        /* STANDARD PORTAL SHELL                                                     */
         /* ========================================================================= */
         <div className="relative z-10 flex flex-1 flex-col lg:flex-row min-h-screen">
           
@@ -648,11 +813,12 @@ export default function App() {
                 <h2 className="text-xs font-black tracking-widest uppercase text-emerald-400">ARMY</h2>
               </div>
 
-              {/* Navigation Links */}
+              {/* Navigation Links (Includes new Recordings tab) */}
               <nav className="mt-6 space-y-1.5">
                 {[
                   { id: 'home', label: 'Home', icon: Home },
                   { id: 'meetings', label: 'Meetings', icon: Video },
+                  { id: 'recordings', label: `Recordings (${recordings.length})`, icon: Disc },
                   { id: 'schedule', label: 'Schedule', icon: Calendar },
                   { id: 'about', label: 'About', icon: Info },
                   { id: 'help', label: 'Help', icon: HelpCircle },
@@ -743,6 +909,7 @@ export default function App() {
 
                   {showUserMenu && (
                     <div className="absolute right-0 mt-2 w-48 bg-[#0a160d] border border-emerald-700/40 rounded-xl p-2 shadow-2xl z-50 text-xs">
+                      <button onClick={() => { setActiveTab('recordings'); setShowUserMenu(false); }} className="w-full text-left px-3 py-2 text-zinc-300 hover:text-white hover:bg-emerald-900/20 rounded cursor-pointer">Saved Recordings</button>
                       <button onClick={() => { setActiveTab('about'); setShowUserMenu(false); }} className="w-full text-left px-3 py-2 text-zinc-300 hover:text-white hover:bg-emerald-900/20 rounded cursor-pointer">About RAMS</button>
                       <button onClick={() => { setActiveTab('help'); setShowUserMenu(false); }} className="w-full text-left px-3 py-2 text-zinc-300 hover:text-white hover:bg-emerald-900/20 rounded cursor-pointer">Help & Support</button>
                       <div className="border-t border-emerald-900/40 my-1" />
@@ -769,7 +936,7 @@ export default function App() {
                       </p>
 
                       <p className="text-xs sm:text-sm text-zinc-300 leading-relaxed max-w-lg">
-                        A secure in-app meeting portal for hosting and joining encrypted virtual meetings directly on this platform.
+                        A secure in-app meeting portal for hosting, joining, and recording encrypted virtual meetings directly on this platform.
                       </p>
 
                       <div className="flex flex-wrap items-center gap-3 pt-3">
@@ -810,6 +977,17 @@ export default function App() {
                     </div>
 
                     <div 
+                      onClick={() => setActiveTab('recordings')}
+                      className="p-5 rounded-2xl bg-[#08140b]/80 border border-emerald-800/30 hover:border-emerald-500/50 hover:bg-[#0c1f12] transition-all cursor-pointer group shadow-lg"
+                    >
+                      <div className="p-3 bg-emerald-500/10 rounded-xl text-emerald-400 w-fit mb-3 group-hover:scale-110 transition-transform">
+                        <Disc className="w-5 h-5" />
+                      </div>
+                      <h3 className="font-bold text-sm text-white">Saved Recordings</h3>
+                      <p className="text-xs text-zinc-400 mt-1">{recordings.length} stored on platform</p>
+                    </div>
+
+                    <div 
                       onClick={() => setActiveTab('schedule')}
                       className="p-5 rounded-2xl bg-[#08140b]/80 border border-emerald-800/30 hover:border-emerald-500/50 hover:bg-[#0c1f12] transition-all cursor-pointer group shadow-lg"
                     >
@@ -818,17 +996,6 @@ export default function App() {
                       </div>
                       <h3 className="font-bold text-sm text-white">Scheduled Events</h3>
                       <p className="text-xs text-zinc-400 mt-1">View your agenda</p>
-                    </div>
-
-                    <div 
-                      onClick={() => setActiveTab('about')}
-                      className="p-5 rounded-2xl bg-[#08140b]/80 border border-emerald-800/30 hover:border-emerald-500/50 hover:bg-[#0c1f12] transition-all cursor-pointer group shadow-lg"
-                    >
-                      <div className="p-3 bg-emerald-500/10 rounded-xl text-emerald-400 w-fit mb-3 group-hover:scale-110 transition-transform">
-                        <ShieldCheck className="w-5 h-5" />
-                      </div>
-                      <h3 className="font-bold text-sm text-white">Secure Access</h3>
-                      <p className="text-xs text-zinc-400 mt-1">Army-grade security</p>
                     </div>
 
                     <div 
@@ -872,7 +1039,7 @@ export default function App() {
                     <div className="p-6 rounded-2xl bg-[#08140b]/90 border border-emerald-800/30 flex flex-col justify-between shadow-xl">
                       <div>
                         <h3 className="text-base font-bold text-white">Start a New Meeting</h3>
-                        <p className="text-xs text-zinc-400 mt-1">Begin an in-browser meeting instantly.</p>
+                        <p className="text-xs text-zinc-400 mt-1">Begin an in-browser meeting instantly with recording support.</p>
                       </div>
 
                       <div className="pt-6">
@@ -977,7 +1144,154 @@ export default function App() {
                 </div>
               )}
 
-              {/* ---------------- 3. SCHEDULE TAB ---------------- */}
+              {/* ---------------- 3. SAVED RECORDINGS TAB (Directly inside platform) ---------------- */}
+              {activeTab === 'recordings' && (
+                <div className="space-y-6 animate-fadeIn">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-3">
+                      <div className="p-2.5 bg-emerald-500/20 text-emerald-400 rounded-xl">
+                        <Disc className="w-6 h-6" />
+                      </div>
+                      <div>
+                        <h2 className="text-2xl font-black text-white">Platform Recordings</h2>
+                        <p className="text-xs text-zinc-400">Meeting sessions captured and stored directly on the RAMS platform</p>
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={() => launchInAppMeeting('New Session')}
+                      className="flex items-center space-x-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-4 py-2 rounded-xl text-xs transition-all cursor-pointer"
+                    >
+                      <Video className="w-4 h-4 fill-current" />
+                      <span>Start & Record</span>
+                    </button>
+                  </div>
+
+                  {/* Recordings List */}
+                  {recordings.length === 0 ? (
+                    <div className="p-12 text-center border border-dashed border-emerald-900/40 rounded-3xl bg-[#071109]/50 space-y-3">
+                      <Disc className="w-10 h-10 text-emerald-500/30 mx-auto" />
+                      <h4 className="text-base font-bold text-zinc-200">No recordings saved on platform yet</h4>
+                      <p className="text-xs text-zinc-400 max-w-md mx-auto">
+                        During any live meeting, click the red <strong>Record Meeting</strong> button. When you stop or end the call, the video is automatically compiled and saved here on the platform.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="space-y-3.5">
+                      {recordings.map((rec) => (
+                        <div
+                          key={rec.id}
+                          className="p-4 sm:p-5 rounded-2xl bg-[#08140b]/80 border border-emerald-900/30 hover:border-emerald-700/50 flex flex-col sm:flex-row sm:items-center justify-between gap-4 transition-all"
+                        >
+                          <div className="flex items-center space-x-4">
+                            <div className="w-12 h-12 rounded-xl bg-red-950/40 border border-red-500/40 flex items-center justify-center text-red-400 shrink-0">
+                              <Disc className="w-6 h-6 animate-pulse" />
+                            </div>
+
+                            <div>
+                              <h4 className="text-base font-bold text-white">{rec.meetingTitle}</h4>
+                              <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-400 mt-1">
+                                <span className="text-emerald-400 font-mono">Code: {rec.meetingCode}</span>
+                                <span>&bull;</span>
+                                <span>{rec.dateStr} at {rec.timeStr}</span>
+                                <span>&bull;</span>
+                                <span>Duration: <strong className="text-zinc-200">{formatSeconds(rec.durationSeconds)}</strong></span>
+                                <span>&bull;</span>
+                                <span>Size: {formatBytes(rec.sizeBytes)}</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center space-x-2 self-end sm:self-center">
+                            {/* Playback on platform */}
+                            <button
+                              onClick={() => setSelectedPlayback(rec)}
+                              className="flex items-center space-x-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-4 py-2 rounded-xl text-xs transition-all shadow-md cursor-pointer"
+                            >
+                              <Play className="w-3.5 h-3.5 fill-current" />
+                              <span>Play on Platform</span>
+                            </button>
+
+                            {/* Download local backup */}
+                            <button
+                              onClick={() => {
+                                const url = URL.createObjectURL(rec.blob);
+                                const a = document.createElement('a');
+                                a.href = url;
+                                a.download = `${rec.meetingTitle.replace(/\s+/g, '_')}_${rec.meetingCode}.webm`;
+                                a.click();
+                                URL.revokeObjectURL(url);
+                              }}
+                              className="p-2 rounded-xl bg-[#0c2314] border border-emerald-800/60 text-emerald-300 hover:bg-[#11311c] transition-all cursor-pointer"
+                              title="Download backup file"
+                            >
+                              <Download className="w-4 h-4" />
+                            </button>
+
+                            {/* Delete */}
+                            <button
+                              onClick={() => handleDeleteRecording(rec.id)}
+                              className="p-2 rounded-xl bg-red-950/30 border border-red-900/40 text-red-400 hover:bg-red-900/40 transition-all cursor-pointer"
+                              title="Delete recording"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Built-in Video Player Modal */}
+                  {selectedPlayback && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4">
+                      <div className="bg-[#09150d] border border-emerald-600/50 rounded-3xl p-6 max-w-3xl w-full shadow-2xl relative">
+                        <button
+                          onClick={() => setSelectedPlayback(null)}
+                          className="absolute top-4 right-4 text-zinc-400 hover:text-white cursor-pointer"
+                        >
+                          <X className="w-5 h-5" />
+                        </button>
+
+                        <div className="mb-4">
+                          <h3 className="text-xl font-black text-white">{selectedPlayback.meetingTitle}</h3>
+                          <p className="text-xs text-zinc-400">
+                            Recorded on {selectedPlayback.dateStr} &bull; Room {selectedPlayback.meetingCode}
+                          </p>
+                        </div>
+
+                        <div className="relative aspect-video rounded-2xl bg-black overflow-hidden border border-emerald-900/50 shadow-inner">
+                          <video
+                            src={URL.createObjectURL(selectedPlayback.blob)}
+                            controls
+                            autoPlay
+                            className="w-full h-full object-contain"
+                          />
+                        </div>
+
+                        <div className="mt-4 flex items-center justify-between text-xs text-zinc-400">
+                          <span>Format: WebM Video (VP9/Opus)</span>
+                          <button
+                            onClick={() => {
+                              const url = URL.createObjectURL(selectedPlayback.blob);
+                              const a = document.createElement('a');
+                              a.href = url;
+                              a.download = `${selectedPlayback.meetingTitle}_backup.webm`;
+                              a.click();
+                            }}
+                            className="flex items-center space-x-1.5 text-emerald-400 hover:underline cursor-pointer"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            <span>Download WebM</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ---------------- 4. SCHEDULE TAB ---------------- */}
               {activeTab === 'schedule' && (
                 <div className="space-y-6 animate-fadeIn">
                   <div className="flex items-center justify-between">
@@ -1000,7 +1314,6 @@ export default function App() {
                     </button>
                   </div>
 
-                  {/* Filter Pills */}
                   <div className="flex items-center space-x-2 bg-[#061008] border border-emerald-950 p-1 rounded-xl w-fit">
                     <button
                       onClick={() => setScheduleFilter('upcoming')}
@@ -1034,7 +1347,6 @@ export default function App() {
                     </button>
                   </div>
 
-                  {/* Clean List */}
                   <div className="space-y-3.5">
                     {filteredMeetings.length === 0 ? (
                       <div className="p-10 text-center border border-dashed border-emerald-900/40 rounded-2xl bg-[#071109]/50">
@@ -1104,7 +1416,7 @@ export default function App() {
                 </div>
               )}
 
-              {/* ---------------- 4. ABOUT TAB ---------------- */}
+              {/* ---------------- 5. ABOUT TAB ---------------- */}
               {activeTab === 'about' && (
                 <div className="space-y-6 animate-fadeIn">
                   <div className="flex items-center space-x-3">
@@ -1134,7 +1446,7 @@ export default function App() {
                         <h3 className="text-3xl font-black text-white">RAMS</h3>
                         <h4 className="text-base font-bold text-emerald-400">Remote Army Meeting System</h4>
                         <p className="text-xs sm:text-sm text-zinc-300 leading-relaxed max-w-xl">
-                          RAMS is a secure communication platform providing real-time in-app video conferencing, screen sharing, and messaging for defense and military operations.
+                          RAMS is a secure communication platform providing real-time in-app video conferencing, screen sharing, recording, and messaging for defense operations.
                         </p>
                       </div>
                     </div>
@@ -1159,15 +1471,15 @@ export default function App() {
                           </li>
                           <li className="flex items-center space-x-2">
                             <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                            <span>Direct Platform Recording & Playback</span>
+                          </li>
+                          <li className="flex items-center space-x-2">
+                            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
                             <span>Encrypted In-Meeting Text Messaging</span>
                           </li>
                           <li className="flex items-center space-x-2">
                             <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
                             <span>Screen Sharing & Hand Raising</span>
-                          </li>
-                          <li className="flex items-center space-x-2">
-                            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                            <span>Zero Third-Party Dependency</span>
                           </li>
                         </ul>
                       </div>
@@ -1176,7 +1488,7 @@ export default function App() {
                 </div>
               )}
 
-              {/* ---------------- 5. HELP TAB ---------------- */}
+              {/* ---------------- 6. HELP TAB ---------------- */}
               {activeTab === 'help' && (
                 <div className="space-y-6 animate-fadeIn">
                   <div className="flex items-center space-x-3">
@@ -1195,7 +1507,7 @@ export default function App() {
                       {[
                         { title: 'Getting Started', icon: Play, action: () => launchInAppMeeting('Test Meeting') },
                         { title: 'Joining a Meeting', icon: Users, action: () => setShowJoinModal(true) },
-                        { title: 'Scheduling Meetings', icon: Calendar, action: () => setActiveTab('schedule') },
+                        { title: 'Meeting Recordings', icon: Disc, action: () => setActiveTab('recordings') },
                         { title: 'Troubleshooting', icon: Headphones, action: () => alert('Ensure microphone and camera permissions are allowed in your browser.') },
                       ].map((item, idx) => {
                         const Icon = item.icon;
@@ -1223,16 +1535,16 @@ export default function App() {
 
                     {[
                       {
-                        q: 'How do I start a meeting?',
-                        a: 'Click "Start a Meeting" on the home screen or in the Meetings tab. Your live meeting room opens immediately inside this website.',
+                        q: 'How do I record a meeting on the platform?',
+                        a: 'During an active meeting, click the Record button on the top bar or control deck. The timer will start counting. When you stop the recording or end the meeting, it will automatically be saved to the "Recordings" tab.',
+                      },
+                      {
+                        q: 'Where are the recordings saved?',
+                        a: 'Recordings are saved directly to the platform storage (IndexedDB) inside your browser. You can replay them directly on the platform anytime or download a backup copy.',
                       },
                       {
                         q: 'How do others join my meeting?',
                         a: 'Copy the room code displayed in your meeting room top bar and share it. Other participants enter that code into "Join with Code" to enter.',
-                      },
-                      {
-                        q: 'How do I enable camera and audio?',
-                        a: 'When your browser requests permission for camera and microphone, click Allow. You can toggle them anytime from the call control bar.',
                       },
                     ].map((faq, idx) => {
                       const isOpen = openFaq === idx;
